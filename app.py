@@ -6,6 +6,9 @@ import tempfile
 import numpy as np
 import soundfile as sf
 import requests
+import uuid
+import gc
+
 from TTS.config import load_config
 from TTS.tts.models.vits import Vits
 
@@ -20,7 +23,7 @@ CONFIG_URL = "https://drive.google.com/uc?export=download&id=1U3MKG8n0XlxIx-w6HX
 model_path = "model_file.pth"
 config_path = "config.json"
 
-# 📥 Function to download from Google Drive
+# 📥 Download from Google Drive if not already present
 def download_if_not_exists(url, save_path):
     if not os.path.exists(save_path):
         print(f"Downloading {save_path} from Google Drive...")
@@ -36,27 +39,29 @@ download_if_not_exists(CONFIG_URL, config_path)
 # 🔊 Output directory
 output_dir = tempfile.mkdtemp()
 
-# 🚀 Load TTS model
-def load_tts_model(model_path, config_path):
-    try:
-        print("Loading config...")
-        config = load_config(config_path)
+# 🔁 Lazy model loader
+model = None
+def get_model():
+    global model
+    if model is None:
+        try:
+            print("Loading config...")
+            config = load_config(config_path)
 
-        print("Initializing model...")
-        model = Vits.init_from_config(config)
+            print("Initializing model...")
+            model_instance = Vits.init_from_config(config)
 
-        print("Loading weights...")
-        model.load_checkpoint(config, checkpoint_path=model_path)
-        model.eval()
+            print("Loading weights...")
+            model_instance.load_checkpoint(config, checkpoint_path=model_path)
+            model_instance.eval()
+            model_instance.to("cpu")  # Force CPU
 
-        print("Model ready ✅")
-        return model
-    except Exception as e:
-        print("Model load failed:", str(e))
-        raise
-
-# 🔁 Initialize model
-model = load_tts_model(model_path, config_path)
+            print("Model ready ✅")
+            model = model_instance
+        except Exception as e:
+            print("Model load failed:", str(e))
+            raise
+    return model
 
 # 🎙️ Synthesize endpoint
 @app.route('/synthesize', methods=['POST'])
@@ -69,10 +74,12 @@ def synthesize():
 
     try:
         print(f"Synthesizing: {text}")
-        processed_text = model.tokenizer.text_to_ids(text)
+        model_instance = get_model()
+
+        processed_text = model_instance.tokenizer.text_to_ids(text)
         processed_text = torch.tensor(processed_text).unsqueeze(0)
 
-        model_outputs = model.inference(processed_text)
+        model_outputs = model_instance.inference(processed_text)
         waveform = model_outputs.get('model_outputs')
 
         if isinstance(waveform, torch.Tensor):
@@ -80,18 +87,23 @@ def synthesize():
 
         sample_rate = model_outputs.get('sample_rate', 22050)
 
-        output_path = os.path.join(output_dir, "output6.wav")
+        filename = f"{uuid.uuid4().hex}.wav"
+        output_path = os.path.join(output_dir, filename)
         sf.write(output_path, waveform, samplerate=sample_rate, format='WAV')
 
-        return jsonify({"audio_url": "/output6.wav"})
+        # Clean up unused memory
+        gc.collect()
+
+        return jsonify({"audio_url": f"/audio/{filename}"})
 
     except Exception as e:
         print("Synthesis failed:", str(e))
         return jsonify({"error": str(e)}), 500
 
-# 🔊 Serve audio
-@app.route('/output6.wav')
-def serve_audio():
-    return send_file(os.path.join(output_dir, "output6.wav"), mimetype="audio/wav")
-
-# 🔥 No app.run() block needed — Gunicorn will run the app
+# 🔊 Serve audio dynamically
+@app.route('/audio/<filename>')
+def serve_audio(filename):
+    file_path = os.path.join(output_dir, filename)
+    if os.path.exists(file_path):
+        return send_file(file_path, mimetype="audio/wav")
+    return jsonify({"error": "File not found"}), 404
