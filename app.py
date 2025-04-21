@@ -83,7 +83,7 @@ def synthesize():
         output_path = os.path.join(output_dir, "output6.wav")
         sf.write(output_path, waveform, samplerate=sample_rate, format='WAV')
 
-        return jsonify({"audio_url": "http://127.0.0.1:5000/output6.wav"})
+        return jsonify({"audio_url": "/output6.wav"})
 
     except Exception as e:
         print("Synthesis failed:", str(e))
@@ -94,7 +94,4 @@ def synthesize():
 def serve_audio():
     return send_file(os.path.join(output_dir, "output6.wav"), mimetype="audio/wav")
 
-# 🟢 Run server
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))  # use PORT from Render
-    app.run(debug=False, host="0.0.0.0", port=port)
+# 🔥 No app.run() block needed — Gunicorn will run the app
